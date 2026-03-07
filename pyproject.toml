@@ -22,9 +22,9 @@ exclude = ["conftest.py", "*_test.py"]
 packages = ["sam3d_objects"]
 
 [tool.hatch.metadata.hooks.requirements_txt]
-files = ["requirements.txt"]
+files = []
 
 [tool.hatch.metadata.hooks.requirements_txt.optional-dependencies]
-p3d = ["requirements.p3d.txt"]
-inference = ["requirements.inference.txt"]
-dev = ["requirements.dev.txt"]
+p3d = []
+inference = []
+dev = []
