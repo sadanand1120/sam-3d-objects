@@ -638,6 +638,7 @@ def run_gs_alignment(
     intrinsics,
     device,
     align_pm_coordinate=False,
+    depth_edge_rtol=0.03,
 ):
     """
     Manual alignment between Gaussian positions and point cloud.
@@ -650,7 +651,7 @@ def run_gs_alignment(
     depth = Point_Map[..., 2].cpu().numpy()
 
     # Remove flying points (large depth discontinuities)
-    depth_edge_mask = depth_edge(depth, rtol=0.03, mask=mask_2d)
+    depth_edge_mask = depth_edge(depth, rtol=depth_edge_rtol, mask=mask_2d)
     cleaned_mask = mask_2d & ~depth_edge_mask
 
     # Convert back to torch tensor and apply to get target points
@@ -722,7 +723,7 @@ def run_gs_alignment(
     return translated_positions, target_points, center, tfm1, gaussian_aligned, ori_iou, final_iou, flag_notgt
 
 
-def run_gs_ICP(source_points, target_points, threshold):
+def run_gs_ICP(source_points, target_points, threshold, with_scaling=False, max_iteration=None):
     """
     Run ICP alignment on Gaussian positions.
     Similar to run_ICP but for GS.
@@ -736,13 +737,30 @@ def run_gs_ICP(source_points, target_points, threshold):
 
     # Run ICP
     trans_init = np.eye(4)
-    reg_p2p = o3d.pipelines.registration.registration_icp(
-        src_pcd,
-        tgt_pcd,
-        threshold,
-        trans_init,
-        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-    )
+    pre_eval = o3d.pipelines.registration.evaluate_registration(src_pcd, tgt_pcd, threshold, trans_init)
+    rmse_before = float(pre_eval.inlier_rmse) if pre_eval.fitness > 0 else float("inf")
+    estimation = o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=with_scaling)
+    if max_iteration is None:
+        reg_p2p = o3d.pipelines.registration.registration_icp(
+            src_pcd,
+            tgt_pcd,
+            threshold,
+            trans_init,
+            estimation,
+        )
+    else:
+        criteria = o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iteration)
+        reg_p2p = o3d.pipelines.registration.registration_icp(
+            src_pcd,
+            tgt_pcd,
+            threshold,
+            trans_init,
+            estimation,
+            criteria,
+        )
+
+    post_eval = o3d.pipelines.registration.evaluate_registration(src_pcd, tgt_pcd, threshold, reg_p2p.transformation)
+    rmse_after = float(post_eval.inlier_rmse) if post_eval.fitness > 0 else float("inf")
 
     # Apply transformation to source points
     src_pcd.transform(reg_p2p.transformation)
@@ -750,7 +768,7 @@ def run_gs_ICP(source_points, target_points, threshold):
         np.asarray(src_pcd.points), dtype=torch.float32, device=source_points.device
     )
 
-    return points_aligned_icp, reg_p2p.transformation
+    return points_aligned_icp, reg_p2p.transformation, rmse_before, rmse_after
 
 
 def apply_icp_transformation_to_gaussian(gaussian, transformation, device):

@@ -70,6 +70,7 @@ def render(
     scaling_modifier=1.0,
     override_color=None,
     backend="inria",
+    render_mode="RGB",
 ):
     """
     Render the scene.
@@ -178,6 +179,12 @@ def render(
         gsplat_colors = colors_precomp if colors_precomp is not None else shs
         gsplat_sh_degree = pc.active_sh_degree if shs is not None else None
 
+        backgrounds = bg_color
+        if backgrounds.dim() == 1:
+            backgrounds = backgrounds.unsqueeze(0)
+        if render_mode in {"RGB+D", "RGB+ED"}:
+            backgrounds = None
+
         render_colors, render_alphas, meta = rasterization(
             means=means3D,
             quats=rotations,
@@ -189,11 +196,14 @@ def render(
             Ks=Ks,
             width=int(viewpoint_camera.image_width),
             height=int(viewpoint_camera.image_height),
-            backgrounds=bg_color,
+            backgrounds=backgrounds,
+            render_mode=render_mode,
         )
-        rendered_image = render_colors.squeeze(0).permute(
-            2, 0, 1
-        )  # Convert to (C, H, W)
+        depth_image = None
+        if render_mode in {"RGB+D", "RGB+ED"}:
+            depth_image = render_colors[..., -1:].squeeze(0).permute(2, 0, 1)
+            render_colors = render_colors[..., :-1]
+        rendered_image = render_colors.squeeze(0).permute(2, 0, 1)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
@@ -207,6 +217,8 @@ def render(
         # Also provide RGBA combined format for convenience
         rgba_image = torch.cat([rendered_image, render_alpha], dim=0)  # (4, H, W)
         result["rgba"] = rgba_image
+        if render_mode in {"RGB+D", "RGB+ED"}:
+            result["depth"] = depth_image
 
     return result
 
@@ -233,6 +245,8 @@ class GaussianRenderer:
         self.rendering_options = edict(
             {
                 "resolution": None,
+                "image_height": None,
+                "image_width": None,
                 "near": None,
                 "far": None,
                 "ssaa": 1,
@@ -249,6 +263,7 @@ class GaussianRenderer:
         extrinsics: torch.Tensor,
         intrinsics: torch.Tensor,
         colors_overwrite: torch.Tensor = None,
+        render_mode: str = "RGB",
     ) -> edict:
         """
         Render the gausssian.
@@ -264,9 +279,15 @@ class GaussianRenderer:
                 color (torch.Tensor): (3, H, W) rendered color image
         """
         resolution = self.rendering_options["resolution"]
+        image_height = self.rendering_options["image_height"]
+        image_width = self.rendering_options["image_width"]
         near = self.rendering_options["near"]
         far = self.rendering_options["far"]
         ssaa = self.rendering_options["ssaa"]
+
+        if image_height is None or image_width is None:
+            image_height = resolution
+            image_width = resolution
 
         if self.rendering_options["bg_color"] == "random":
             self.bg_color = torch.zeros(3, dtype=torch.float32, device="cuda")
@@ -287,8 +308,8 @@ class GaussianRenderer:
 
         camera_dict = edict(
             {
-                "image_height": resolution * ssaa,
-                "image_width": resolution * ssaa,
+                "image_height": image_height * ssaa,
+                "image_width": image_width * ssaa,
                 "FoVx": fovx,
                 "FoVy": fovy,
                 "znear": near,
@@ -310,12 +331,13 @@ class GaussianRenderer:
             override_color=colors_overwrite,
             scaling_modifier=self.pipe.scale_modifier,
             backend=self.rendering_options["backend"],
+            render_mode=render_mode,
         )
 
         if ssaa > 1:
             render_ret.render = F.interpolate(
                 render_ret.render[None],
-                size=(resolution, resolution),
+                size=(image_height, image_width),
                 mode="bilinear",
                 align_corners=False,
                 antialias=True,
@@ -329,7 +351,7 @@ class GaussianRenderer:
                 # Apply same downsampling to alpha channel
                 alpha_downsampled = F.interpolate(
                     render_ret.alpha[None],
-                    size=(resolution, resolution),
+                    size=(image_height, image_width),
                     mode="bilinear",
                     align_corners=False,
                     antialias=True,
@@ -340,5 +362,18 @@ class GaussianRenderer:
             else:
                 ret["alpha"] = render_ret["alpha"]
                 ret["rgba"] = render_ret["rgba"]
+
+        if "depth" in render_ret:
+            if ssaa > 1:
+                depth_downsampled = F.interpolate(
+                    render_ret.depth[None],
+                    size=(image_height, image_width),
+                    mode="bilinear",
+                    align_corners=False,
+                    antialias=True,
+                ).squeeze()
+                ret["depth"] = depth_downsampled
+            else:
+                ret["depth"] = render_ret["depth"]
 
         return ret

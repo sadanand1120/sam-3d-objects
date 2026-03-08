@@ -253,6 +253,13 @@ def layout_post_optimization_method_GS(
     device=None,
     backend="gsplat",
     seed=100,
+    alignment_depth_edge_rtol=0.03,
+    alignment_flip_xy=False,
+    icp_threshold=0.05,
+    icp_with_scaling=False,
+    icp_max_iteration=None,
+    accept_icp_on_tie=False,
+    accept_icp_if_rmse_improves=False,
 ):
     """
     Gaussian Splatting layout post-optimization function.
@@ -274,6 +281,13 @@ def layout_post_optimization_method_GS(
         min_size: int, minimum image size for rendering
         device: torch device
         backend: str, "gsplat" or "inria" for GS rendering
+        alignment_depth_edge_rtol: float, depth-edge filtering threshold for pointmap cleanup
+        alignment_flip_xy: bool, flips pointmap X/Y before alignment when conventions are mismatched
+        icp_threshold: float, ICP correspondence threshold (meters in current scale)
+        icp_with_scaling: bool, enables similarity ICP (rigid + isotropic scaling)
+        icp_max_iteration: Optional[int], ICP max iteration budget (None keeps Open3D defaults)
+        accept_icp_on_tie: bool, accept ICP when IoU ties instead of requiring strict improvement
+        accept_icp_if_rmse_improves: bool, accept ICP when pointcloud inlier RMSE improves
 
     Returns:
         Tuple of (quaternion, translation, scale, final_iou, initial_iou, Flag_ICP, Flag_optim)
@@ -327,7 +341,15 @@ def layout_post_optimization_method_GS(
     if Enable_manual_alignment:
         source_points, target_points, center, tfm1, gaussian_aligned, ori_iou, final_iou, flag_notgt = (
             run_gs_alignment(
-                point_map, mask, gaussian_transformed, center, renderer, intrinsics_tensor, device
+                point_map,
+                mask,
+                gaussian_transformed,
+                center,
+                renderer,
+                intrinsics_tensor,
+                device,
+                align_pm_coordinate=alignment_flip_xy,
+                depth_edge_rtol=alignment_depth_edge_rtol,
             )
         )
         logger.info(f"Step 1 Manual Alignment Done!")
@@ -357,8 +379,12 @@ def layout_post_optimization_method_GS(
 
     # Step 2: Shape ICP
     if Enable_shape_ICP and source_points is not None and target_points is not None:
-        points_aligned_icp, transformation = run_gs_ICP(
-            source_points, target_points, threshold=0.05
+        points_aligned_icp, transformation, rmse_before, rmse_after = run_gs_ICP(
+            source_points,
+            target_points,
+            threshold=icp_threshold,
+            with_scaling=icp_with_scaling,
+            max_iteration=icp_max_iteration,
         )
         gaussian_ICP = copy_and_update_gaussian_positions(
             gaussian_aligned, points_aligned_icp
@@ -379,7 +405,9 @@ def layout_post_optimization_method_GS(
         ori_iou_shapeICP = compute_iou_gs(rendered, mask, threshold=0.5)
 
         # Determine whether to accept ICP
-        if ori_iou_shapeICP > ori_iou:
+        iou_accept = (ori_iou_shapeICP > ori_iou) or (accept_icp_on_tie and ori_iou_shapeICP >= ori_iou)
+        rmse_accept = accept_icp_if_rmse_improves and (rmse_after < rmse_before)
+        if iou_accept or rmse_accept:
             Flag_ICP = True
             gaussian_aligned = gaussian_ICP
             final_iou = ori_iou_shapeICP.cpu().item()
@@ -390,11 +418,11 @@ def layout_post_optimization_method_GS(
                 .rotate(R[None])
                 .translate(t[None])
             )
-            logger.info(f"Step 2 ICP: Accepted ICP result (IoU improved: {ori_iou:.3f} → {ori_iou_shapeICP:.3f})")
+            logger.info(f"Step 2 ICP: Accepted ICP result (IoU: {ori_iou:.3f} → {ori_iou_shapeICP:.3f}, RMSE: {rmse_before:.6f} → {rmse_after:.6f}, threshold={icp_threshold}, with_scaling={icp_with_scaling}, max_iter={icp_max_iteration}, accept_by_rmse={rmse_accept})")
         else:
             Flag_ICP = False
             tfm2 = Transform3d(device=device)  # Identity transform
-            logger.info(f"Step 2 ICP: Rejected ICP result (IoU not improved: {ori_iou:.3f} → {ori_iou_shapeICP:.3f})")
+            logger.info(f"Step 2 ICP: Rejected ICP result (IoU not improved: {ori_iou:.3f} → {ori_iou_shapeICP:.3f}, RMSE: {rmse_before:.6f} → {rmse_after:.6f}, threshold={icp_threshold}, with_scaling={icp_with_scaling}, max_iter={icp_max_iteration})")
     else:
         Flag_ICP = False
         tfm2 = Transform3d(device=device)  # Identity transform

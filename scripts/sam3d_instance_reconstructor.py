@@ -38,11 +38,39 @@ class SAM3DInstanceReconstructor:
         compile_model: bool = False,
         seed: int = 42,
         save_combined_scene: bool = True,
+        with_layout_postprocess: bool = False,
+        gs_enable_occlusion_check: bool = False,
+        gs_enable_manual_alignment: bool = False,
+        gs_enable_shape_icp: bool = False,
+        gs_enable_rendering_optimization: bool = True,
+        gs_min_size: int = 518,
+        gs_backend: str = "gsplat",
+        gs_alignment_depth_edge_rtol: float = 0.03,
+        gs_alignment_flip_xy: bool = False,
+        gs_icp_threshold: float = 0.05,
+        gs_icp_with_scaling: bool = False,
+        gs_icp_max_iteration: int | None = None,
+        gs_accept_icp_on_tie: bool = False,
+        gs_accept_icp_if_rmse_improves: bool = False,
     ) -> None:
         self.config_path = str(config_path)
         self.output_root = Path(output_root)
         self.seed = int(seed)
         self.save_combined_scene = bool(save_combined_scene)
+        self.with_layout_postprocess = bool(with_layout_postprocess)
+        self.gs_enable_occlusion_check = bool(gs_enable_occlusion_check)
+        self.gs_enable_manual_alignment = bool(gs_enable_manual_alignment)
+        self.gs_enable_shape_icp = bool(gs_enable_shape_icp)
+        self.gs_enable_rendering_optimization = bool(gs_enable_rendering_optimization)
+        self.gs_min_size = int(gs_min_size)
+        self.gs_backend = str(gs_backend)
+        self.gs_alignment_depth_edge_rtol = float(gs_alignment_depth_edge_rtol)
+        self.gs_alignment_flip_xy = bool(gs_alignment_flip_xy)
+        self.gs_icp_threshold = float(gs_icp_threshold)
+        self.gs_icp_with_scaling = bool(gs_icp_with_scaling)
+        self.gs_icp_max_iteration = None if gs_icp_max_iteration is None else int(gs_icp_max_iteration)
+        self.gs_accept_icp_on_tie = bool(gs_accept_icp_on_tie)
+        self.gs_accept_icp_if_rmse_improves = bool(gs_accept_icp_if_rmse_improves)
         self.output_root.mkdir(parents=True, exist_ok=True)
 
         self.inference = Inference(self.config_path, compile=compile_model)
@@ -105,7 +133,33 @@ class SAM3DInstanceReconstructor:
         pointmap = full_pointmap_hwc
         if isinstance(pointmap, np.ndarray):
             pointmap = torch.from_numpy(pointmap.astype(np.float32, copy=False))
-        output = self.inference(image_rgb, mask_hw, seed=self.seed, pointmap=pointmap)
+
+        rgba = self.inference.merge_mask_to_rgba(image_rgb, mask_hw)
+        output = self.inference._pipeline.run(
+            rgba,
+            None,
+            self.seed,
+            stage1_only=False,
+            with_mesh_postprocess=False,
+            with_texture_baking=False,
+            with_layout_postprocess=self.with_layout_postprocess,
+            use_vertex_color=True,
+            stage1_inference_steps=None,
+            pointmap=pointmap,
+            gs_post_enable_occlusion_check=self.gs_enable_occlusion_check,
+            gs_post_enable_manual_alignment=self.gs_enable_manual_alignment,
+            gs_post_enable_shape_icp=self.gs_enable_shape_icp,
+            gs_post_enable_rendering_optimization=self.gs_enable_rendering_optimization,
+            gs_post_min_size=self.gs_min_size,
+            gs_post_backend=self.gs_backend,
+            gs_post_alignment_depth_edge_rtol=self.gs_alignment_depth_edge_rtol,
+            gs_post_alignment_flip_xy=self.gs_alignment_flip_xy,
+            gs_post_icp_threshold=self.gs_icp_threshold,
+            gs_post_icp_with_scaling=self.gs_icp_with_scaling,
+            gs_post_icp_max_iteration=self.gs_icp_max_iteration,
+            gs_post_accept_icp_on_tie=self.gs_accept_icp_on_tie,
+            gs_post_accept_icp_if_rmse_improves=self.gs_accept_icp_if_rmse_improves,
+        )
         return output
 
     def save_instance(
@@ -235,6 +289,38 @@ if __name__ == "__main__":
     if manifest_1.get("scene_cam_ply"):
         # This launches a Gradio app and blocks until closed (ctrl+C)
         reconstructor.show_scene(manifest_1["scene_cam_ply"])
+
+    # Demo 3 (tight-to-pointmap variant of Demo 1)
+    reconstructor_tight = SAM3DInstanceReconstructor(
+        config_path=config_path,
+        output_root=f"{output_root}_tight",
+        compile_model=False,
+        seed=42,
+        save_combined_scene=True,
+        with_layout_postprocess=True,
+        gs_enable_occlusion_check=False,
+        gs_enable_manual_alignment=True,
+        gs_enable_shape_icp=True,
+        gs_enable_rendering_optimization=False,
+        gs_min_size=518,
+        gs_backend="gsplat",
+        gs_alignment_depth_edge_rtol=0.08,
+        gs_alignment_flip_xy=False,
+        gs_icp_threshold=0.08,
+        gs_icp_with_scaling=False,
+        gs_icp_max_iteration=80,
+        gs_accept_icp_on_tie=True,
+        gs_accept_icp_if_rmse_improves=False,
+    )
+    manifest_path_3 = reconstructor_tight.run(
+        image_path=image_path_1,
+        sam3_npz_path=sam3_npz_path_1,
+        min_mask_area_pixels=16,
+    )
+    print(f"Demo 3 (tight) done. Manifest written to: {manifest_path_3}")
+    manifest_3 = json.loads(manifest_path_3.read_text())
+    if manifest_3.get("scene_cam_ply"):
+        reconstructor_tight.show_scene(manifest_3["scene_cam_ply"])
 
     # Demo 2 (same reconstructor object reused for a second image)
     image_path_2 = "/robodata/smodak/repos/f3rm/datasets/f3rm/fresh/objaverse/car2/images/frame_00002.png"

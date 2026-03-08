@@ -346,7 +346,27 @@ class InferencePipelinePointMap(InferencePipeline):
         }
 
     @torch.autograd.grad_mode.inference_mode(mode=False)
-    def run_post_optimization_GS(self, gs_input, intrinsics, pose_dict, layout_input_dict, backend="gsplat"):
+    def run_post_optimization_GS(
+        self,
+        gs_input,
+        intrinsics,
+        pose_dict,
+        layout_input_dict,
+        backend="gsplat",
+        enable_occlusion_check=False,
+        enable_manual_alignment=False,
+        enable_shape_icp=False,
+        enable_rendering_optimization=True,
+        min_size=518,
+        alignment_depth_edge_rtol=0.03,
+        alignment_flip_xy=False,
+        icp_threshold=0.05,
+        icp_with_scaling=False,
+        icp_max_iteration=None,
+        accept_icp_on_tie=False,
+        accept_icp_if_rmse_improves=False,
+    ):
+
         intrinsics = intrinsics.clone()
         fx, fy = intrinsics[0, 0], intrinsics[1, 1]
         re_focal = min(fx, fy)
@@ -362,13 +382,20 @@ class InferencePipelinePointMap(InferencePipeline):
                 layout_input_dict["rgb_image"][0],
                 layout_input_dict["rgb_pointmap_unnorm"][0].permute(1, 2, 0),
                 intrinsics,
-                Enable_occlusion_check=False,
-                Enable_manual_alignment=False,
-                Enable_shape_ICP=False,
-                Enable_rendering_optimization=True,
-                min_size=518,
+                Enable_occlusion_check=enable_occlusion_check,
+                Enable_manual_alignment=enable_manual_alignment,
+                Enable_shape_ICP=enable_shape_icp,
+                Enable_rendering_optimization=enable_rendering_optimization,
+                min_size=min_size,
                 device=self.device,
                 backend=backend,
+                alignment_depth_edge_rtol=alignment_depth_edge_rtol,
+                alignment_flip_xy=alignment_flip_xy,
+                icp_threshold=icp_threshold,
+                icp_with_scaling=icp_with_scaling,
+                icp_max_iteration=icp_max_iteration,
+                accept_icp_on_tie=accept_icp_on_tie,
+                accept_icp_if_rmse_improves=accept_icp_if_rmse_improves,
             )
         )
 
@@ -399,6 +426,19 @@ class InferencePipelinePointMap(InferencePipeline):
         pointmap=None,
         decode_formats=None,
         estimate_plane=False,
+        gs_post_enable_occlusion_check: bool = False,
+        gs_post_enable_manual_alignment: bool = False,
+        gs_post_enable_shape_icp: bool = False,
+        gs_post_enable_rendering_optimization: bool = True,
+        gs_post_min_size: int = 518,
+        gs_post_backend: str = "gsplat",
+        gs_post_alignment_depth_edge_rtol: float = 0.03,
+        gs_post_alignment_flip_xy: bool = False,
+        gs_post_icp_threshold: float = 0.05,
+        gs_post_icp_with_scaling: bool = False,
+        gs_post_icp_max_iteration: Optional[int] = None,
+        gs_post_accept_icp_on_tie: bool = False,
+        gs_post_accept_icp_if_rmse_improves: bool = False,
     ) -> dict:
         image = self.merge_image_and_mask(image, mask)
         with self.device: 
@@ -475,7 +515,19 @@ class InferencePipelinePointMap(InferencePipeline):
                             pointmap_dict["intrinsics"],
                             ss_return_dict,
                             ss_input_dict,
-                            backend="gsplat",
+                            backend=gs_post_backend,
+                            enable_occlusion_check=gs_post_enable_occlusion_check,
+                            enable_manual_alignment=gs_post_enable_manual_alignment,
+                            enable_shape_icp=gs_post_enable_shape_icp,
+                            enable_rendering_optimization=gs_post_enable_rendering_optimization,
+                            min_size=gs_post_min_size,
+                            alignment_depth_edge_rtol=gs_post_alignment_depth_edge_rtol,
+                            alignment_flip_xy=gs_post_alignment_flip_xy,
+                            icp_threshold=gs_post_icp_threshold,
+                            icp_with_scaling=gs_post_icp_with_scaling,
+                            icp_max_iteration=gs_post_icp_max_iteration,
+                            accept_icp_on_tie=gs_post_accept_icp_on_tie,
+                            accept_icp_if_rmse_improves=gs_post_accept_icp_if_rmse_improves,
                         )
                         ss_return_dict.update(postprocessed_pose)
                         logger.info(f"Finished GS post-optimization!")
